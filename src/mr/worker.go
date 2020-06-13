@@ -1,10 +1,22 @@
 package mr
 
+import "os"
 import "fmt"
 import "log"
+import "sort"
+import "time"
 import "net/rpc"
+import "strconv"
 import "hash/fnv"
+import "io/ioutil"
+import "encoding/json"
+import "path/filepath"
 
+// for sorting by key.
+type ByKey []KeyValue
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // Map functions return a slice of KeyValue.
@@ -31,34 +43,153 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	// request task from master
+	// get jobName, fileName
+	// if map: fileName = input file
+	// if reduce: fileName = string(reduceID)
+	for {
+		jobName, fileName, jobID, nReduce := WorkerRequestJob()
+		if jobName == "done" {
+			break
+		}
+		if jobName == "map" {
+			file, err := os.Open(fileName)			
+			// empty filename means currently no map job available
+			if fileName == "" {
+				// fmt.Printf("......\n")
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			if err != nil { log.Fatalf("cannot open %v", fileName) }
+			
+			content, err := ioutil.ReadAll(file)
+			if err != nil { log.Fatalf("cannot read %v", fileName) }
+			file.Close()
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+			// intermediate key value
+			kva := mapf(fileName, string(content))
+			intermediate := make([][]KeyValue, nReduce)
+			for _, kv := range kva {
+				h := ihash(kv.Key)
+				h %= nReduce
+				intermediate[h] = append(intermediate[h], kv)
+			}
 
+			// save intermediate in tmp file (incase of err)
+			for i := 0; i < nReduce; i++ {
+				tmpfile, err := ioutil.TempFile("", "") // dir, pattern string
+				if err != nil { log.Fatal(err) }
+				
+				enc := json.NewEncoder(tmpfile)
+				for _, kv := range intermediate[i] {
+					if err:=enc.Encode(&kv); err != nil {
+						log.Fatal(err)
+					}
+				}
+
+				if err:= tmpfile.Close(); err != nil {
+					log.Fatal(err)
+				}
+
+				// fmt.Printf("map[%d] gen itm_%d_%d\n", jobID, jobID, i)
+				os.Rename(tmpfile.Name(), fmt.Sprintf("itm_%d_%d", jobID, i))
+			}
+			fmt.Printf("map(%d) done [%s]\n", jobID, fileName)
+			WorkerReplyJob(jobName, fileName, jobID)
+		}
+
+		if jobName == "reduce" {
+			kva := []KeyValue{}
+			reduceID, _ := strconv.Atoi(fileName)
+			if reduceID == -1 {
+				// fmt.Printf("------\n")
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			fmt.Printf("reduce(%d) todo [%d]\n", jobID, reduceID)
+
+			itms, err := filepath.Glob(fmt.Sprintf("itm_*_%d", reduceID))
+
+			if err != nil { log.Fatalf("cannot open itm_*_%d", reduceID) }
+
+			// load from all intermediates of this reduce
+			for _, itm := range itms {
+				file, err := os.Open(itm)
+				if err != nil { log.Fatal(err) }
+				defer file.Close()
+				// var r io.Reader = file
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			sort.Sort(ByKey(kva))
+			
+			oname := fmt.Sprintf("mr-out-%d", reduceID)
+			ofile, _ := os.Create(oname)
+			
+			i := 0
+			for i < len(kva) {
+				j := i+1
+				for j < len(kva) && kva[j].Key == kva[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, kva[k].Value)
+				}
+				output := reducef(kva[i].Key, values)
+				// fmt.Printf("my value: %v %v\n", kva[i].Key, output)
+				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+				i = j
+			}
+			ofile.Close()
+			fmt.Printf("reduce(%d) done [%d]\n", jobID, reduceID)
+			// delete itm
+			for _, itm := range itms {
+				os.Remove(itm)
+			}
+
+			WorkerReplyJob(jobName, fileName, jobID)
+		}
+		// relax
+		time.Sleep(1 * time.Second)
+	}
 }
 
 //
-// example function to show how to make an RPC call to the master.
+// worker call this function to request master for job
 //
-// the RPC argument and reply types are defined in rpc.go.
+func WorkerRequestJob() (jobName string, fileName string, jobID int, nReduce int) {
+	args := WorkerReqArgs{}
+	reply := MasterRepArgs{}
+	call("Master.WorkerRequest", &args, &reply)
+
+	jobName = reply.JobName
+	fileName = reply.FileName
+	jobID = reply.JobID
+	nReduce = reply.NReduce
+
+	fmt.Printf("%s(%d) REQ: GET [%s]\n", jobName, jobID, fileName)
+	return jobName, fileName, jobID, nReduce
+}
+
 //
-func CallExample() {
+// worker call this function to reply master the job status
+//
+func WorkerReplyJob(jobName string, fileName string, jobID int) {
+	args := WorkerRepArgs{}
+	reply := MasterRepArgs{}
+	args.JobName = jobName
+	args.FileName = fileName
+	args.JobID = jobID
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+	call("Master.WorkerReply", &args, &reply)
+	fmt.Printf("%s(%d) REP: DONE [%s]\n", jobName, jobID, fileName)
 }
 
 //

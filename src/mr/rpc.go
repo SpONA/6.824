@@ -14,15 +14,36 @@ import "strconv"
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
-}
+// type ExampleArgs struct {
+// 	X int
+// }
 
-type ExampleReply struct {
-	Y int
-}
+// type ExampleReply struct {
+// 	Y int
+// }
+
 
 // Add your RPC definitions here.
+type WorkerReqArgs struct {
+
+}
+
+type WorkerRepArgs struct {
+	JobName string  // "map" or "reduce"
+	FileName string // "input" or ""
+	JobID int 		// "map_id" or "reduce_id"
+}
+
+type MasterRepArgs struct {
+	JobName string  // "map" or "reduce"
+	FileName string // "input" or ""
+	JobID int 		// "map_id" or "reduce_id"
+	NReduce int 	// "nReduce"
+}
+
+// type WorkerRepArgs struct {
+	
+// }
 
 
 // Cook up a unique-ish UNIX-domain socket name
