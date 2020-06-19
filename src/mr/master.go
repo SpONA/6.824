@@ -165,7 +165,7 @@ func (m *Master) WorkerReply(args *WorkerRepArgs, reply *MasterRepArgs) error {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 
-	// get reply info
+	// prepare reply info
 	fileName := args.FileName
 	jobName := args.JobName
 
