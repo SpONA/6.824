@@ -1,5 +1,6 @@
 ## MIT 6.824 Distributed Systems
 Author: Ping Sun
+
 Course Website: [https://pdos.csail.mit.edu/6.824/schedule.html](https://pdos.csail.mit.edu/6.824/schedule.html)
 
 Lab1: MapReduce (Finished)
